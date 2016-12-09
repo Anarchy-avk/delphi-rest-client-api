@@ -276,6 +276,15 @@ begin
     if AClassType.InheritsFrom(TList) and (AJSONValue.AsArray.Length > 0) then
     begin
       vItemClassName := '';
+
+      vPosList := Pos('ObjectList', AClassType.ClassName);
+      if (vPosList = 0) then
+      begin
+        vPosList := Pos('List', AClassType.ClassName);
+      end;
+      if vPosList > 0 then
+        vItemClassName := Copy(AClassType.ClassName, 1, vPosList-1);
+
       if Assigned(APropInfo) and (vItemClassName = '') then
       begin
         vPosList := Pos('ObjectList', String(APropInfo^.Name));
