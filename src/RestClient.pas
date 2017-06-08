@@ -7,7 +7,7 @@ interface
 uses Classes, SysUtils, HttpConnection,
      RestUtils, RestJsonUtils,
      {$IFDEF SUPPORTS_GENERICS}
-     Generics.Collections, Rtti,
+     Generics.Collections, Rtti, TypInfo,
      {$ELSE}
      Contnrs, OldRttiUnMarshal,
      {$ENDIF}
@@ -173,6 +173,7 @@ type
 
     function Accept(AcceptType: String): TResource;
     function Async(const Value: Boolean = True): TResource;
+    function Authorization(Authorization: String): TResource;
     function ContentType(ContentType: String): TResource;
     function AcceptLanguage(Language: String): TResource;
 
@@ -188,16 +189,25 @@ type
     function Post(Content: string): String;overload;
     procedure Post(Content: TStream; AHandler: TRestResponseHandler);overload;
     function Post(Entity: TObject): TObject;overload;
+    function Post(Content: string; ResultClass: TClass): TObject;overload;
+    function Post(Content: TStream; ResultClass: TClass): TObject;overload;
+    function Post(Entity: TObject; ResultClass: TClass): TObject;overload;
 
     function Put(Content: TStream): String;overload;
     function Put(Content: string): string;overload;
     procedure Put(Content: TStream; AHandler: TRestResponseHandler);overload;
     function Put(Entity: TObject): TObject;overload;
+    function Put(Content: string; ResultClass: TClass): TObject;overload;
+    function Put(Content: TStream; ResultClass: TClass): TObject;overload;
+    function Put(Entity: TObject; ResultClass: TClass): TObject;overload;
 
     function Patch(Content: TStream): String;overload;
     function Patch(Content: string): string;overload;
     procedure Patch(Content: TStream; AHandler: TRestResponseHandler);overload;
     function Patch(Entity: TObject): TObject;overload;
+    function Patch(Content: string; ResultClass: TClass): TObject;overload;
+    function Patch(Content: TStream; ResultClass: TClass): TObject;overload;
+    function Patch(Entity: TObject; ResultClass: TClass): TObject;overload;
 
     procedure Delete();overload;
     procedure Delete(Entity: TObject);overload;
@@ -212,6 +222,7 @@ type
     {$IFDEF SUPPORTS_GENERICS}
     function Get<T>(): T;overload;
     function Post<T>(Entity: TObject): T;overload;
+    function Post<T>(Content: string): T;overload;
     function Put<T>(Entity: TObject): T;overload;
     function Patch<T>(Entity: TObject): T;overload;
     {$ELSE}
@@ -227,6 +238,34 @@ type
     function GetAsDataSet(const RootElement: String): TDataSet;overload;
     {$ENDIF}
   end;
+
+  {$IFDEF SUPPORTS_GENERICS}
+  TMultiPartFormAttachment = class
+  private
+    FFileName: string;
+    FMimeType: string;
+    FContent: TStringStream;
+  public
+    constructor Create(MimeType, FileName: string); overload;
+    constructor Create(Source: TStream; MimeType, FileName: string); overload;
+    constructor Create(FilePath, MimeType, FileName: string); overload;
+    destructor Destroy; override;
+    property Content: TStringStream read FContent write FContent;
+    property MimeType: string read FMimeType write FMimeType;
+    property FileName: string read FFileName write FFileName;
+  end;
+
+  TMultiPartFormData = class
+  private
+    FBoundary: string;
+    FContentType: string;
+    procedure AddFieldContent(Field: TRttiField; var Content: TStringList);
+  public
+    constructor Create;
+    function ContentAsString: string;
+    property ContentType: string read FContentType;
+  end;
+  {$ENDIF}
 
 implementation
 
@@ -451,6 +490,7 @@ begin
     begin
       FHttpConnection := THttpConnectionFactory.NewConnection(FConnectionType);
       FHttpConnection.EnabledCompression := FEnabledCompression;
+      FHttpConnection.VerifyCert := FVerifyCert;
     end;
   end;
 end;
@@ -647,6 +687,11 @@ begin
   Result := Self;
 end;
 
+function TResource.Authorization(Authorization: String): TResource;
+begin
+  Result := Header('Authorization', Authorization);
+end;
+
 function TResource.ContentType(ContentType: String): TResource;
 begin
   FContentTypes := ContentType;
@@ -755,6 +800,18 @@ begin
   vResponse := FRestClient.DoRequest(METHOD_POST, Self);
 
   if trim(vResponse) <> '' then
+    Result := TJsonUtil.UnMarshal<T>(vResponse)
+  else
+    Result := Default(T);
+end;
+
+function TResource.Post<T>(Content: string): T;
+var
+  vResponse: string;
+begin
+  vResponse := Post(Content);
+
+  if Trim(vResponse) <> '' then
     Result := TJsonUtil.UnMarshal<T>(vResponse)
   else
     Result := Default(T);
@@ -877,21 +934,33 @@ end;
 
 procedure TResource.SetContent(entity: TObject);
 var
-  vJson: string;
+  vRawContent: string;
   vStream: TStringStream;
+  {$IFDEF SUPPORTS_GENERICS}
+  vMultipartFormData: TMultipartFormData;
+  {$ENDIF}
 begin
   FContent.Clear;
-  if Assigned(entity) then
-  begin
-     vJson := TJsonUtil.Marshal(Entity);
+  if not Assigned(entity) then
+    Exit;
 
-    vStream := TStringStream.Create(vJson);
-    try
-      vStream.Position := 0;
-      FContent.CopyFrom(vStream, vStream.Size);
-    finally
-      vStream.Free;
-    end;
+  {$IFDEF SUPPORTS_GENERICS}
+  if entity is TMultipartFormData then
+  begin
+    vMultipartFormData := TMultipartFormData(entity);
+    vRawContent := vMultipartFormData.ContentAsString;
+    ContentType(vMultipartFormData.ContentType);
+  end
+  else
+  {$ENDIF}
+    vRawContent := TJsonUtil.Marshal(Entity);
+
+  vStream := TStringStream.Create(vRawContent);
+  try
+    vStream.Position := 0;
+    FContent.CopyFrom(vStream, vStream.Size);
+  finally
+    vStream.Free;
   end;
 end;
 
@@ -918,6 +987,45 @@ begin
     Result := nil;
 end;
 
+function TResource.Post(Content: string; ResultClass: TClass): TObject;
+var
+  vStringStream: TStringStream;
+begin
+  vStringStream := TStringStream.Create(Content);
+  try
+    Result := Post(vStringStream, ResultClass);
+  finally
+    vStringStream.Free;
+  end;
+end;
+
+function TResource.Post(Content: TStream; ResultClass: TClass): TObject;
+var
+  vResponse: string;
+begin
+  Content.Position := 0;
+  FContent.CopyFrom(Content, Content.Size);
+
+  vResponse := FRestClient.DoRequest(METHOD_POST, Self);
+  if trim(vResponse) <> '' then
+    Result := TJsonUtil.UnMarshal(ResultClass, vResponse)
+  else
+    Result := nil;
+end;
+
+function TResource.Post(Entity: TObject; ResultClass: TClass): TObject;
+var
+  vResponse: string;
+begin
+  if Entity <> nil then
+    SetContent(Entity);
+  vResponse := FRestClient.DoRequest(METHOD_POST, Self);
+  if trim(vResponse) <> '' then
+    Result := TJsonUtil.UnMarshal(ResultClass, vResponse)
+  else
+    Result := nil;
+end;
+
 function TResource.Put(Entity: TObject): TObject;
 var
   vResponse: string;
@@ -928,6 +1036,45 @@ begin
   vResponse := FRestClient.DoRequest(METHOD_PUT, Self);
   if trim(vResponse) <> '' then
     Result := TJsonUtil.UnMarshal(Entity.ClassType, vResponse)
+  else
+    Result := nil;
+end;
+
+function TResource.Put(Content: string; ResultClass: TClass): TObject;
+var
+  vStringStream: TStringStream;
+begin
+  vStringStream := TStringStream.Create(Content);
+  try
+    Result := Put(vStringStream, ResultClass);
+  finally
+    vStringStream.Free;
+  end;
+end;
+
+function TResource.Put(Content: TStream; ResultClass: TClass): TObject;
+var
+  vResponse: string;
+begin
+  Content.Position := 0;
+  FContent.CopyFrom(Content, Content.Size);
+
+  vResponse := FRestClient.DoRequest(METHOD_PUT, Self);
+  if trim(vResponse) <> '' then
+    Result := TJsonUtil.UnMarshal(ResultClass, vResponse)
+  else
+    Result := nil;
+end;
+
+function TResource.Put(Entity: TObject; ResultClass: TClass): TObject;
+var
+  vResponse: string;
+begin
+  if Entity <> nil then
+    SetContent(Entity);
+  vResponse := FRestClient.DoRequest(METHOD_PUT, Self);
+  if trim(vResponse) <> '' then
+    Result := TJsonUtil.UnMarshal(ResultClass, vResponse)
   else
     Result := nil;
 end;
@@ -958,6 +1105,45 @@ begin
   vResponse := FRestClient.DoRequest(METHOD_PATCH, Self);
   if trim(vResponse) <> '' then
     Result := TJsonUtil.UnMarshal(Entity.ClassType, vResponse)
+  else
+    Result := nil;
+end;
+
+function TResource.Patch(Content: string; ResultClass: TClass): TObject;
+var
+  vStringStream: TStringStream;
+begin
+  vStringStream := TStringStream.Create(Content);
+  try
+    Result := Patch(vStringStream, ResultClass);
+  finally
+    vStringStream.Free;
+  end;
+end;
+
+function TResource.Patch(Content: TStream; ResultClass: TClass): TObject;
+var
+  vResponse: string;
+begin
+  Content.Position := 0;
+  FContent.CopyFrom(Content, Content.Size);
+
+  vResponse := FRestClient.DoRequest(METHOD_PATCH, Self);
+  if trim(vResponse) <> '' then
+    Result := TJsonUtil.UnMarshal(ResultClass, vResponse)
+  else
+    Result := nil;
+end;
+
+function TResource.Patch(Entity: TObject; ResultClass: TClass): TObject;
+var
+  vResponse: string;
+begin
+  if Entity <> nil then
+    SetContent(Entity);
+  vResponse := FRestClient.DoRequest(METHOD_PATCH, Self);
+  if trim(vResponse) <> '' then
+    Result := TJsonUtil.UnMarshal(ResultClass, vResponse)
   else
     Result := nil;
 end;
@@ -996,5 +1182,95 @@ class function TJsonListAdapter.NewFrom(AList: TList; AItemClass: TClass): IJson
 begin
   Result := TJsonListAdapter.Create(AList, AItemClass);
 end;
+
+{ TMultiPartFormData }
+
+{$IFDEF SUPPORTS_GENERICS}
+procedure TMultiPartFormData.AddFieldContent(Field: TRttiField; var Content: TStringList);
+const
+  FmtTextContent = 'Content-Disposition: form-data; name="%s"'+ sLineBreak+sLineBreak +'%s';
+  FmtFileContent = 'Content-Disposition: form-data; name="%s"; filename="%s"'+ sLineBreak +'Content-Type: %s'+ sLineBreak+sLineBreak+ '%s';
+var
+  Attachment: TMultiPartFormAttachment;
+begin
+  if Field.FieldType.TypeKind in [tkString, tkUString, tkWChar, tkLString, tkWString, tkInteger, tkChar, tkWChar] then
+  begin
+    Content.Add(Format(FmtTextContent, [Field.Name, Field.GetValue(Self).AsString]));
+    Exit;
+  end;
+
+  if Field.FieldType.Name.Equals(TMultiPartFormAttachment.ClassName) then
+  begin
+    Attachment := Field.GetValue(Self).AsType<TMultiPartFormAttachment>;
+    Content.Add(Format(FmtFileContent, [Field.Name, Attachment.FileName, Attachment.MimeType, Attachment.Content.DataString]));
+  end;
+end;
+
+function TMultiPartFormData.ContentAsString: string;
+var
+  vField: TRttiField;
+  vContent: TStringList;
+  vBoundary: string;
+  vRttiContext: TRttiContext;
+  vRttiType: TRttiType;
+begin
+  vBoundary := '--' + FBoundary;
+
+  vContent := TStringList.Create;
+  try
+    vContent.Add(vBoundary);
+
+    vRttiContext := TRttiContext.Create;
+    vRttiType := vRttiContext.GetType(Self.ClassType);
+    for vField in vRttiType.GetDeclaredFields do
+    begin
+      AddFieldContent(vField, vContent);
+      vContent.Add(vBoundary);
+    end;
+
+    vContent.Strings[Pred(vContent.Count)] := vBoundary + '--';
+    Result := vContent.Text;
+  finally
+    vContent.Free;
+  end;
+end;
+
+constructor TMultiPartFormData.Create;
+const
+  FmtBoundary = 'boundary--%s';
+  FmtContentType = 'multipart/form-data; boundary=%s';
+var
+  vGUID: TGUID;
+begin
+  CreateGUID(vGUID);
+  FBoundary := Format(FmtBoundary, [GUIDToString(vGUID)]);
+  FContentType := Format(FmtContentType, [FBoundary]);
+end;
+
+constructor TMultiPartFormAttachment.Create(Source: TStream; MimeType, FileName: string);
+begin
+  Create(MimeType, FileName);
+  FContent.LoadFromStream(Source);
+end;
+
+constructor TMultiPartFormAttachment.Create(FilePath, MimeType, FileName: string);
+begin
+  Create(MimeType, FileName);
+  FContent.LoadFromFile(FilePath);
+end;
+
+constructor TMultiPartFormAttachment.Create(MimeType, FileName: string);
+begin
+  FContent := TStringStream.Create;
+  FMimeType := MimeType;
+  FFileName := FileName;
+end;
+
+destructor TMultiPartFormAttachment.Destroy;
+begin
+  FContent.Free;
+  inherited;
+end;
+{$ENDIF}
 
 end.
