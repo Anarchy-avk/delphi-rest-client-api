@@ -160,6 +160,9 @@ type
 
     constructor Create(RestClient: TRestClient; URL: string);
     procedure SetContent(entity: TObject);
+    function EntityRequest(Entity: TObject; ResultClass: TClass; Method: TRequestMethod; AHandler: TRestResponseHandler = nil): TObject;
+    function ContentRequest(Content: TStream; Method: TRequestMethod; AHandler: TRestResponseHandler = nil): string; overload;
+    function ContentRequest(Content: TStream; ResultClass: TClass; Method: TRequestMethod; AHandler: TRestResponseHandler  = nil): TObject; overload;
   public
     destructor Destroy; override;
 
@@ -293,7 +296,7 @@ begin
   FProxyCredentials := TProxyCredentials.Create(Self);
   FProxyCredentials.Name := 'ProxyCredentials';
   FProxyCredentials.SetSubComponent(True);
- 
+
   FLogin := '';
   FPassword := '';
 
@@ -467,7 +470,7 @@ end;
 function TRestClient.GetResponseCode: Integer;
 begin
   CheckConnection;
-  
+
   Result := FHttpConnection.ResponseCode;
 end;
 
@@ -592,10 +595,7 @@ end;
 
 procedure TResource.Post(Content: TStream; AHandler: TRestResponseHandler);
 begin
-  Content.Position := 0;
-  FContent.CopyFrom(Content, Content.Size);
-
-  FRestClient.DoRequest(METHOD_POST, Self, AHandler);
+  ContentRequest(Content, METHOD_POST, AHandler)
 end;
 
 function TResource.Put(Content: string): string;
@@ -624,10 +624,7 @@ end;
 
 procedure TResource.Put(Content: TStream; AHandler: TRestResponseHandler);
 begin
-  Content.Position := 0;
-  FContent.CopyFrom(Content, Content.Size);
-
-  FRestClient.DoRequest(METHOD_PUT, Self, AHandler);
+  ContentRequest(Content, METHOD_PUT, AHandler);
 end;
 
 {$IFDEF SUPPORTS_ANONYMOUS_METHODS}
@@ -692,6 +689,26 @@ begin
   Result := Header('Authorization', Authorization);
 end;
 
+function TResource.ContentRequest(Content: TStream; Method: TRequestMethod;
+  AHandler: TRestResponseHandler): string;
+begin
+  Content.Position := 0;
+  FContent.CopyFrom(Content, Content.Size);
+  Result := FRestClient.DoRequest(Method, Self, AHandler);
+end;
+
+function TResource.ContentRequest(Content: TStream; ResultClass: TClass;
+  Method: TRequestMethod; AHandler: TRestResponseHandler): TObject;
+var
+  vResponse: string;
+begin
+  vResponse := ContentRequest(Content, Method, AHandler);
+  if Trim(vResponse) <> '' then
+    Result := TJsonUtil.UnMarshal(ResultClass, vResponse)
+  else
+    Result := nil;
+end;
+
 function TResource.ContentType(ContentType: String): TResource;
 begin
   FContentTypes := ContentType;
@@ -723,10 +740,23 @@ end;
 destructor TResource.Destroy;
 begin
   FRestClient.FResources.Extract(Self);
-  
+
   FContent.Free;
   FHeaders.Free;
   inherited;
+end;
+
+function TResource.EntityRequest(Entity: TObject; ResultClass: TClass; Method: TRequestMethod; AHandler: TRestResponseHandler = nil): TObject;
+var
+  vResponse: string;
+begin
+  if Entity <> nil then
+    SetContent(Entity);
+  vResponse := FRestClient.DoRequest(Method, Self, AHandler);
+  if Trim(vResponse) <> '' then
+    Result := TJsonUtil.UnMarshal(ResultClass, vResponse)
+  else
+    Result := nil;
 end;
 
 function TResource.Get: string;
@@ -773,10 +803,7 @@ end;
 
 function TResource.Post(Content: TStream): String;
 begin
-  Content.Position := 0;
-  FContent.CopyFrom(Content, Content.Size);
-
-  Result := FRestClient.DoRequest(METHOD_POST, Self);
+  Result := ContentRequest(Content, METHOD_POST)
 end;
 
 {$IFDEF SUPPORTS_GENERICS}
@@ -966,25 +993,12 @@ end;
 
 function TResource.Put(Content: TStream): String;
 begin
-  if Content <> nil then
-  begin
-    Content.Position := 0;
-    FContent.CopyFrom(Content, Content.Size);
-  end;
-  Result := FRestClient.DoRequest(METHOD_PUT, Self);
+  Result := ContentRequest(Content, METHOD_PUT);
 end;
 
 function TResource.Post(Entity: TObject): TObject;
-var
-  vResponse: string;
 begin
-  if Entity <> nil then
-    SetContent(Entity);
-  vResponse := FRestClient.DoRequest(METHOD_POST, Self);
-  if trim(vResponse) <> '' then
-    Result := TJsonUtil.UnMarshal(Entity.ClassType, vResponse)
-  else
-    Result := nil;
+  Result := Post(Entity, Entity.ClassType);
 end;
 
 function TResource.Post(Content: string; ResultClass: TClass): TObject;
@@ -1000,44 +1014,18 @@ begin
 end;
 
 function TResource.Post(Content: TStream; ResultClass: TClass): TObject;
-var
-  vResponse: string;
 begin
-  Content.Position := 0;
-  FContent.CopyFrom(Content, Content.Size);
-
-  vResponse := FRestClient.DoRequest(METHOD_POST, Self);
-  if trim(vResponse) <> '' then
-    Result := TJsonUtil.UnMarshal(ResultClass, vResponse)
-  else
-    Result := nil;
+  Result := ContentRequest(Content, ResultClass, METHOD_POST);
 end;
 
 function TResource.Post(Entity: TObject; ResultClass: TClass): TObject;
-var
-  vResponse: string;
 begin
-  if Entity <> nil then
-    SetContent(Entity);
-  vResponse := FRestClient.DoRequest(METHOD_POST, Self);
-  if trim(vResponse) <> '' then
-    Result := TJsonUtil.UnMarshal(ResultClass, vResponse)
-  else
-    Result := nil;
+  Result := EntityRequest(Entity, ResultClass, METHOD_POST);
 end;
 
 function TResource.Put(Entity: TObject): TObject;
-var
-  vResponse: string;
 begin
-  if Entity <> nil then
-    SetContent(Entity);
-
-  vResponse := FRestClient.DoRequest(METHOD_PUT, Self);
-  if trim(vResponse) <> '' then
-    Result := TJsonUtil.UnMarshal(Entity.ClassType, vResponse)
-  else
-    Result := nil;
+  Result := Put(Entity, Entity.ClassType);
 end;
 
 function TResource.Put(Content: string; ResultClass: TClass): TObject;
@@ -1053,60 +1041,28 @@ begin
 end;
 
 function TResource.Put(Content: TStream; ResultClass: TClass): TObject;
-var
-  vResponse: string;
 begin
-  Content.Position := 0;
-  FContent.CopyFrom(Content, Content.Size);
-
-  vResponse := FRestClient.DoRequest(METHOD_PUT, Self);
-  if trim(vResponse) <> '' then
-    Result := TJsonUtil.UnMarshal(ResultClass, vResponse)
-  else
-    Result := nil;
+  Result := ContentRequest(Content, ResultClass, METHOD_PUT);
 end;
 
 function TResource.Put(Entity: TObject; ResultClass: TClass): TObject;
-var
-  vResponse: string;
 begin
-  if Entity <> nil then
-    SetContent(Entity);
-  vResponse := FRestClient.DoRequest(METHOD_PUT, Self);
-  if trim(vResponse) <> '' then
-    Result := TJsonUtil.UnMarshal(ResultClass, vResponse)
-  else
-    Result := nil;
+  Result := EntityRequest(Entity, ResultClass, METHOD_PUT);
 end;
 
 function TResource.Patch(Content: TStream): String;
 begin
-  Content.Position := 0;
-  FContent.CopyFrom(Content, Content.Size);
-
-  Result := FRestClient.DoRequest(METHOD_PATCH, Self);
+  Result := ContentRequest(Content, METHOD_PATCH);
 end;
 
 procedure TResource.Patch(Content: TStream; AHandler: TRestResponseHandler);
 begin
-  Content.Position := 0;
-  FContent.CopyFrom(Content, Content.Size);
-
-  FRestClient.DoRequest(METHOD_PATCH, Self, AHandler);
+  ContentRequest(Content, METHOD_PATCH, AHandler);
 end;
 
 function TResource.Patch(Entity: TObject): TObject;
-var
-  vResponse: string;
 begin
-  if Entity <> nil then
-    SetContent(Entity);
-
-  vResponse := FRestClient.DoRequest(METHOD_PATCH, Self);
-  if trim(vResponse) <> '' then
-    Result := TJsonUtil.UnMarshal(Entity.ClassType, vResponse)
-  else
-    Result := nil;
+  Result := Patch(Entity, Entity.ClassType);
 end;
 
 function TResource.Patch(Content: string; ResultClass: TClass): TObject;
@@ -1122,30 +1078,13 @@ begin
 end;
 
 function TResource.Patch(Content: TStream; ResultClass: TClass): TObject;
-var
-  vResponse: string;
 begin
-  Content.Position := 0;
-  FContent.CopyFrom(Content, Content.Size);
-
-  vResponse := FRestClient.DoRequest(METHOD_PATCH, Self);
-  if trim(vResponse) <> '' then
-    Result := TJsonUtil.UnMarshal(ResultClass, vResponse)
-  else
-    Result := nil;
+  Result := ContentRequest(Content, ResultClass, METHOD_PATCH);
 end;
 
 function TResource.Patch(Entity: TObject; ResultClass: TClass): TObject;
-var
-  vResponse: string;
 begin
-  if Entity <> nil then
-    SetContent(Entity);
-  vResponse := FRestClient.DoRequest(METHOD_PATCH, Self);
-  if trim(vResponse) <> '' then
-    Result := TJsonUtil.UnMarshal(ResultClass, vResponse)
-  else
-    Result := nil;
+  Result := EntityRequest(Entity, ResultClass, METHOD_PATCH);
 end;
 
 function TResource.Patch(Content: string): string;
